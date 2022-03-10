@@ -6,6 +6,8 @@
 # 一个控制解密密钥的人，可以选择将智能AI模型本身解密，从而其释放到世界上，或仅将智能AI的某次单个预测结果解密，后者似乎更安全。
 
 
+
+
 # 对数据进行加密后，虽然无法被读取，但是仍然保留统计学上的结构，
 # 这使得人们可以在加密数据上训练模型(例如CryptoNets)
 #%% Load data
@@ -14,7 +16,7 @@ from collections import Counter
 import numpy as np
 import time
 
-path = "./deep-learning/sentiment-network/"
+path = "./"
 
 labels = []
 reviews = []
@@ -24,38 +26,6 @@ with open(path + "labels.txt") as f:
 
 with open(path + "reviews.txt") as f:
     reviews = list(map(lambda x:x[:-1], f.readlines()))
-
-
-positive_counts = Counter()
-negative_counts = Counter()
-total_counts = Counter()
-
-for i in range(len(reviews)):
-    if labels[i] == 'POSITIVE':
-        for word in reviews[i].split(" "):
-            positive_counts[word] += 1
-            total_counts[word] += 1
-    else:
-        for word in reviews[i].split(" "):
-            negative_counts[word] += 1
-            total_counts[word] += 1
-
-pos_neg_ratios = Counter()
-
-for term, cnt in list(total_counts.most_common()):
-    if cnt > 100:
-        pos_neg_ratio = positive_counts[term] / float(negative_counts[term]+1)
-        pos_neg_ratios[term] = pos_neg_ratio
-
-for word, ratio in pos_neg_ratios.most_common():
-    if ratio > 1:
-        pos_neg_ratios[word] = np.log(ratio)
-    else:
-        pos_neg_ratios[word] = -np.log((1 / (ratio+0.01)))
-
-vocab = set(total_counts.keys())
-vocab_size = len(vocab)
-print(vocab_size)
 
 #%% 
 # Encapsulate our neural network in a class
@@ -294,4 +264,3 @@ mlp.test(reviews_encode, labels_encode)
 
 
 
-# %%

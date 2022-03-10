@@ -5,18 +5,262 @@
 # 如果智能AI是同态加密的，那么从它的视角来看，整个外部世界也相当于是同态加密的（意思是不解密，不会互相造成影响）。
 # 一个控制解密密钥的人，可以选择将智能AI模型本身解密，从而其释放到世界上，或仅将智能AI的某次单个预测结果解密，后者似乎更安全。
 
-
-
-
-# 对数据进行加密后，虽然无法被读取，但是仍然保留统计学上的结构，
-# 这使得人们可以在加密数据上训练模型(例如CryptoNets)
-#%% Load data
+#%%
 
 from collections import Counter
 import numpy as np
 import time
 
-path = "./deep-learning/sentiment-network/"
+# Homomorphic Encryption
+class HE:
+    # S*c = w*x + e
+    def __init__(self, m, n, weight) -> None:
+        self.m = m
+        self.n = n
+        self.w = weight
+        # private key
+        self.S = np.random.rand(m, n) * self.w / (2**40)
+        
+    def encrypt(self, S, x):
+        error = np.random.rand(self.m)
+        c = np.linalg.inv(S).dot(self.w * x + error).astype('int64')
+        return c
+    
+    def decrypt(self, S, c):
+        return (S.dot(c) / self.w).astype('float64').round().astype('int64')
+
+x = np.array([0, 1, 2, 5])
+key = HE(4, 4, 160)
+c = key.encrypt(key.S, x)
+# print(key.S)
+print(c, key.decrypt(key.S, c))
+print(c+c, key.decrypt(key.S, c+c))
+print(c*10, key.decrypt(key.S, c*10))
+
+#%% issue
+# 1. S is identity matrix, c does not work. using key switch
+
+## Step 1
+import numpy as np
+class HES(HE):
+    def __init__(self, m, n, weight, level = 10) -> None:
+        super().__init__(m, n, weight)
+        self.level = level
+    
+    # vector
+    def c_star(self, C, l):
+        m = len(C)
+        c_star = np.zeros(l*m, dtype="int64")
+        for i in range(m):
+            b = np.array(list(np.binary_repr(np.abs(C[i]))),dtype='int')
+            if C[i] < 0:
+                b = b * -1
+            c_star[(i * l) + (l-len(b)): (i+1) * l] += b
+        return c_star
+
+    # matrix
+    def s_star(self, S, l):
+        m, n = S.shape
+        l_mat = np.zeros(l, dtype="float64")
+        for i in range(l):
+            l_mat[i] = 2 ** (l-1-i)
+        s_star = np.zeros(m*l*n, dtype="float64")
+        for i in range(m):
+            for j in range(n):
+                s_star[i*n*l+j*l:i*n*l+(j+1)*l] += S[i][j] * l_mat
+        return s_star.reshape(m, l*n)
+    
+    # key switch matrix, public key
+    def key_switch_matrix(self, S, l):
+        self._s_star = self.s_star(S, l)
+        m, n = S.shape
+        n_delta = n + self.level - m
+        T = (10 * np.random.rand(m, n_delta)).astype('int64')
+        _S = np.concatenate((np.eye(m), T), 1)
+        A = (10 * np.random.rand(n_delta, n*l)).astype('int64')
+        E = np.random.rand(m, n*l).astype('int64')
+        M = np.concatenate(((self._s_star - T.dot(A) + E), A), 0)
+        return _S, M
+    
+    def key_switch_server(self, M, c):
+        l = int(np.ceil(np.log2(np.max(np.abs(c)))))
+        print(l)
+        self._c_star = self.c_star(c, l)
+        _c = M.dot(self._c_star)
+        return _c
+    
+    # key switch
+    def key_switch_result(self, S, c):
+        l = int(np.ceil(np.log2(np.max(np.abs(c)))))
+        print(l)
+        _S, M = self.key_switch_matrix(S, l)
+        _c = self.key_switch_server(M, c)
+        return _S, _c
+    
+    def public_key_transformation(self, G, c):
+        l = int(np.ceil(np.log2(np.max(np.abs(c)))))
+        print(l)
+        _S = G.dot(self.S)
+        _S, M = self.key_switch_matrix(_S, l)
+        return _S, M
+
+key_switch = HES(4, 4, 160)
+c = np.array([1, -3])
+S = np.array([[1, 2], [5, 4]])
+_c = key_switch.c_star(c, 3)
+_S = key_switch.s_star(S, 3)
+print(S.dot(c), S.shape, c.shape)
+print(_S.dot(_c), _S.shape, _c.shape)
+
+key_switch = HES(4, 4, 160, 100)
+c = key_switch.encrypt(key_switch.S, x)
+S = key_switch.S
+_S, _c = key_switch.key_switch_result(S, c)
+print(S.dot(c), S.shape, c.shape)
+print(_S.dot(_c), _S.shape, _c.shape)
+print(key_switch.decrypt(_S, _c))
+print(key_switch.decrypt(_S, _c+_c))
+print(key_switch.decrypt(_S, _c*10))
+
+#%% linear transformation
+key_switch = HES(4, 4, 160, 100)
+S = key_switch.S
+c = key_switch.encrypt(S, x)
+print(S.shape, c.shape)
+G = (10 * np.random.rand(5, 4)).astype("int64")
+# target result
+success_ret = G.dot(x)
+_S, M = key_switch.public_key_transformation(G, c)
+_c = key_switch.key_switch_server(M, c)
+print(_S.shape, _c.shape)
+print(success_ret)
+print(key_switch.decrypt(_S, _c))
+
+#%% 
+def inner_products_publicKey(key1, key2, c1, c2):
+    l1 = int(np.ceil(np.log2(np.max(np.abs(c1)))))
+    l2 = int(np.ceil(np.log2(np.max(np.abs(c2)))))
+    l = l1
+    if l < l2:
+        l = l2
+    print(l)
+    
+def inner_products(M, c1, c2):
+    pass
+
+keys1 = HES(4, 4, 160, 100)
+keys2 = HES(4, 4, 160, 100)
+c1 = keys1.encrypt(keys1.S, x)
+c2 = keys2.encrypt(keys2.S, x)
+print(x.dot(x))
+_S, M = inner_products_publicKey(keys1, keys2, c1, c2)
+_c = inner_products(M, c1, c2)
+print(keys1.decrypt(_S, _c))
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+#%%
+def sigmoid_exact(x):
+  return 1 / (1 + np.exp(-x))
+
+def sigmoid_taylor(x):
+  return 1/2+x/4-(x**3)/48+(x**5)/480
+
+print(sigmoid_exact(0.5), sigmoid_taylor(0.5))
+
+#%%
+def vectorize(M):
+    M1 = M.copy()
+    a, b = M.shape
+    return M1.reshape(a * b, 1) * 1.0
+
+def getSecretKey(T):
+    I = np.eye(len(T))
+    return np.concatenate((I, T), 1)
+
+def getRandomMatrix(row, col, bound):
+    A = np.zeros((row, col))
+    for i in range(row):
+        for j in range(col):
+            A[i][j] = np.random.randint(bound)
+    return A
+
+def getBitMatrix(S, l):
+    S_star = list()
+    for i in range(l):
+        S_star.append(S*2**(l-i-1))
+    S_star = np.array(S_star).transpose(1,2,0).reshape(len(S),len(S[0])*l)
+    return S_star
+
+a = np.array([[1, 1], [2, 3]])
+
+print(vectorize(a))
+print(getSecretKey(a))
+
+#%%
+class HES():
+    def __init__(self, l=100, w=2**25, aBound=10, tBound=10, eBound=10, sf=1000) -> None:
+        self.l = l
+        self.w = w
+        self.aBound = aBound
+        self.tBound = tBound
+        self.eBound = eBound
+        self.sf = sf
+        self.init_parameters()
+    
+    def keySwitchMatrix(self, S, T):
+        S_star = getBitMatrix(S, self.l)
+        A = getRandomMatrix(T.shape[1],S_star.shape[1], self.aBound)
+        E = getRandomMatrix(S_star.shape[0], S_star.shape[1], self.eBound)
+        return np.concatenate((S_star + E - T.dot(A), A), 0)
+    
+    def init_parameters(self, max_dim=16):
+        self.T_keys = []
+        for i in range(max_dim):
+            self.T_keys.append(np.random.rand(i+1, self.l)) # 1 -> max_dim
+        self.M_keys = []
+        for i in range(max_dim):
+            # innerProdClient for i
+            S = getSecretKey(self.T_keys[i])
+            tvsts = vectorize(S.T.dot(S)).T
+            mvsts = []
+            for j in self.T_keys[i]:
+                mvsts.append(tvsts.copy())
+            S = self.keySwitchMatrix(np.array(mvsts), self.T_keys[i])
+            self.M_keys.append(S)
+    
+    def print(self):
+        print(self.T_keys)
+        print(self.M_keys)
+#%%
+hes = HES()   
+hes.print()
+
+# 对数据进行加密后，虽然无法被读取，但是仍然保留统计学上的结构，
+# 这使得人们可以在加密数据上训练模型(例如CryptoNets)
+#%% Load data
+
+
+path = "./"
 
 labels = []
 reviews = []
@@ -26,38 +270,6 @@ with open(path + "labels.txt") as f:
 
 with open(path + "reviews.txt") as f:
     reviews = list(map(lambda x:x[:-1], f.readlines()))
-
-
-positive_counts = Counter()
-negative_counts = Counter()
-total_counts = Counter()
-
-for i in range(len(reviews)):
-    if labels[i] == 'POSITIVE':
-        for word in reviews[i].split(" "):
-            positive_counts[word] += 1
-            total_counts[word] += 1
-    else:
-        for word in reviews[i].split(" "):
-            negative_counts[word] += 1
-            total_counts[word] += 1
-
-pos_neg_ratios = Counter()
-
-for term, cnt in list(total_counts.most_common()):
-    if cnt > 100:
-        pos_neg_ratio = positive_counts[term] / float(negative_counts[term]+1)
-        pos_neg_ratios[term] = pos_neg_ratio
-
-for word, ratio in pos_neg_ratios.most_common():
-    if ratio > 1:
-        pos_neg_ratios[word] = np.log(ratio)
-    else:
-        pos_neg_ratios[word] = -np.log((1 / (ratio+0.01)))
-
-vocab = set(total_counts.keys())
-vocab_size = len(vocab)
-print(vocab_size)
 
 #%% 
 # Encapsulate our neural network in a class
@@ -72,6 +284,7 @@ class SentimentNetwork:
         
         """
         np.random.seed(1)
+        self.hms = HES()
         self.init_network(input_nodes, hidden_nodes, 1, learning_rate)
 
     def init_network(self, input_nodes, hidden_nodes, output_nodes, learning_rate):
@@ -199,7 +412,7 @@ class SentimentNetwork:
         else:
             return 0
 
-class ReviewData():
+class ReviewData:
     def __init__(self, reviews, labels) -> None:
         # populate review_vocab with all of the words in the given reviews
         review_vocab = set()
@@ -296,4 +509,3 @@ mlp.test(reviews_encode, labels_encode)
 
 
 
-# %%
